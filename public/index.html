@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgilePulse · Master Poll</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+        body { background: #f4f7fc; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .container { background: white; width: 600px; padding: 40px; border-radius: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.1); }
+        .page { display: none; animation: fadeIn 0.3s ease; }
+        .page.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        h1 { font-size: 28px; margin-bottom: 8px; color: #1a2639; }
+        .sub { color: #6b7a8f; margin-bottom: 30px; }
+        input, button { width: 100%; padding: 14px; margin-bottom: 12px; border: 1px solid #dce1e8; border-radius: 12px; font-size: 16px; box-sizing: border-box; }
+        button { background: #2a6df4; color: white; font-weight: 600; border: none; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #1a4fb0; }
+        button.danger { background: #e74c3c; }
+        button.secondary { background: #6b7a8f; }
+        .option-row { display: flex; gap: 12px; align-items: center; background: #f8fafc; padding: 8px 16px; border-radius: 12px; margin-bottom: 8px; }
+        .option-row span { font-weight: 600; color: #2a6df4; width: 24px; }
+        .vote-btn { background: #eef2f7; color: #1a2639; font-weight: 500; margin-bottom: 6px; display: flex; justify-content: space-between; padding: 12px 16px; border-radius: 12px; cursor: pointer; }
+        .vote-btn:hover { background: #dce3ef; }
+        .badge { background: #2a6df4; color: white; padding: 4px 12px; border-radius: 20px; font-size: 14px; }
+        .link-box { background: #f1f4f9; padding: 14px; border-radius: 12px; word-break: break-all; margin: 15px 0; font-size: 14px; }
+        .chart-container { height: 200px; margin: 20px 0; }
+        .flex-row { display: flex; gap: 10px; }
+        .flex-row button { flex: 1; }
+        .mt-2 { margin-top: 12px; }
+        .poll-card { background: #f8fafc; padding: 12px 16px; border-radius: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #2a6df4; }
+        .poll-card a { color: #2a6df4; text-decoration: none; font-weight: 600; }
+        .poll-card .meta { font-size: 13px; color: #6b7a8f; }
+        .divider { border-top: 2px solid #eef2f7; margin: 25px 0; }
+    </style>
+</head>
+<body>
+
+<div class="container" id="app">
+    
+    <!-- PAGE 1: CREATE + DASHBOARD -->
+    <div id="page-create" class="page active">
+        <h1>📊 Create Poll</h1>
+        <p class="sub">Ask a question and list the options.</p>
+        <input id="poll-title" placeholder='e.g. "Where should we order lunch?"' />
+        <div id="option-list">
+            <div class="option-row"><span>A</span><input class="opt-input" placeholder="Option 1" /></div>
+            <div class="option-row"><span>B</span><input class="opt-input" placeholder="Option 2" /></div>
+            <div class="option-row"><span>C</span><input class="opt-input" placeholder="Option 3 (optional)" /></div>
+            <div class="option-row"><span>D</span><input class="opt-input" placeholder="Option 4 (optional)" /></div>
+        </div>
+        <button onclick="createPoll()">🚀 Launch Poll</button>
+        <p id="error-msg" style="color:red;font-size:14px;"></p>
+
+        <div class="divider"></div>
+        
+        <!-- NEW: SQLite Database Dashboard -->
+        <h3>📋 Recent Polls <span style="font-size:14px;font-weight:normal;color:#6b7a8f;">(Persisted in SQLite)</span></h3>
+        <div id="recent-polls">
+            <p style="color:#6b7a8f;font-size:14px;">Loading polls from database...</p>
+        </div>
+    </div>
+
+    <!-- PAGE 2: SHARE & ADMIN -->
+    <div id="page-share" class="page">
+        <h1>✅ Poll is Live!</h1>
+        <p class="sub">Share the link below with voters.</p>
+        <div class="link-box" id="share-link">Loading...</div>
+        <div class="flex-row">
+            <button onclick="copyLink()">📋 Copy Link</button>
+            <button class="danger" onclick="closePoll()">🔒 Close Poll</button>
+        </div>
+        <button class="mt-2" onclick="goToPoll()">📈 View Live Results</button>
+        <p id="admin-status" style="margin-top:12px;font-weight:bold;"></p>
+        <button class="secondary mt-2" onclick="resetView()" style="background:#6b7a8f;">⬅ Back to Home</button>
+    </div>
+
+    <!-- PAGE 3: VOTING & RESULTS -->
+    <div id="page-poll" class="page">
+        <h1 id="poll-title-display">Title</h1>
+        <p class="sub" id="poll-status">Vote below. Results update live.</p>
+        <div id="options-container"></div>
+        <div class="chart-container">
+            <canvas id="voteChart"></canvas>
+        </div>
+        <button onclick="resetView()" class="secondary" style="background:#6b7a8f;">⬅ Back to Home</button>
+    </div>
+</div>
+
+<script>
+    // --- GLOBAL STATE ---
+    let currentPollId = null;
+    let chartInstance = null;
+    let eventSource = null;
+
+    // --- PAGE ROUTING (Clean navigation) ---
+    function showPage(pageId) {
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        document.getElementById(pageId).classList.add('active');
+    }
+
+    // --- 1. LOAD RECENT POLLS FROM SQLITE (Dashboard) ---
+    async function loadRecentPolls() {
+        try {
+            const res = await fetch('/api/polls');
+            const polls = await res.json();
+            const container = document.getElementById('recent-polls');
+            if (polls.length === 0) {
+                container.innerHTML = '<p style="color:#6b7a8f;font-size:14px;">No polls created yet. Create one above!</p>';
+                return;
+            }
+            container.innerHTML = polls.map(p => `
+                <div class="poll-card">
+                    <div>
+                        <a href="/poll/${p.id}">${p.title}</a>
+                        <div class="meta">${p.total_votes || 0} votes · ${p.option_count} options · ${p.is_active ? '🟢 Active' : '🔒 Closed'}</div>
+                    </div>
+                    <span style="font-size:12px;background:#eef2f7;padding:4px 10px;border-radius:20px;">${p.id}</span>
+                </div>
+            `).join('');
+        } catch (e) {
+            document.getElementById('recent-polls').innerHTML = '<p style="color:red;">Could not load database.</p>';
+        }
+    }
+
+    // --- 2. CREATE POLL ---
+    window.createPoll = async function() {
+        const title = document.getElementById('poll-title').value;
+        const inputs = document.querySelectorAll('.opt-input');
+        const options = [];
+        inputs.forEach(inp => { if (inp.value.trim()) options.push(inp.value.trim()); });
+
+        if (!title || options.length < 2) {
+            document.getElementById('error-msg').innerText = 'Please enter a Title and at least 2 options.';
+            return;
+        }
+
+        const res = await fetch('/api/polls', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, options })
+        });
+        const data = await res.json();
+        currentPollId = data.id;
+        document.getElementById('share-link').innerText = `${window.location.origin}/poll/${data.id}`;
+        showPage('page-share');
+        document.getElementById('admin-status').innerText = '⏳ Poll is Active.';
+        // Refresh the dashboard list in the background
+        loadRecentPolls();
+    };
+
+    // --- 3. SHARE/ADMIN FUNCTIONS ---
+    window.copyLink = function() {
+        const link = document.getElementById('share-link').innerText;
+        navigator.clipboard?.writeText(link);
+        alert('Link copied!');
+    };
+
+    window.closePoll = async function() {
+        if (!confirm('Close this poll permanently?')) return;
+        await fetch(`/api/close/${currentPollId}`, { method: 'POST' });
+        document.getElementById('admin-status').innerText = '🔒 Poll Closed. No more votes accepted.';
+        if (eventSource) eventSource.close();
+        loadRecentPolls();
+    };
+
+    window.goToPoll = function() {
+        loadPoll(currentPollId);
+        showPage('page-poll');
+    };
+
+    // --- 4. LOAD POLL (Viewing & Voting) ---
+    async function loadPoll(pollId) {
+        currentPollId = pollId;
+        const res = await fetch(`/api/polls/${pollId}`);
+        if (res.status === 404) { alert('Poll not found'); return; }
+        const data = await res.json();
+
+        document.getElementById('poll-title-display').innerText = data.title;
+        document.getElementById('poll-status').innerText = data.is_active ? '🟢 Live Voting' : '🔴 Poll Closed';
+
+        const container = document.getElementById('options-container');
+        container.innerHTML = '';
+        const labels = [], counts = [], colors = ['#2a6df4','#34c759','#ff9500','#ff3b30'];
+
+        data.options.forEach((opt, index) => {
+            labels.push(opt.text);
+            counts.push(opt.votes);
+            const div = document.createElement('div');
+            div.className = 'vote-btn';
+            div.innerHTML = `<span>${opt.text}</span> <span class="badge" id="badge-${opt.id}">${opt.votes}</span>`;
+            if (data.is_active) {
+                div.style.cursor = 'pointer';
+                div.onclick = () => vote(opt.id);
+            } else {
+                div.style.opacity = '0.6';
+            }
+            container.appendChild(div);
+        });
+
+        // Draw Chart
+        if (chartInstance) chartInstance.destroy();
+        const ctx = document.getElementById('voteChart').getContext('2d');
+        chartInstance = new Chart(ctx, {
+            type: 'pie',
+            data: { labels: labels, datasets: [{ data: counts, backgroundColor: colors.slice(0, labels.length) }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+        });
+
+        // Setup Real-Time SSE
+        if (eventSource) eventSource.close();
+        eventSource = new EventSource(`/stream/${pollId}`);
+        eventSource.onmessage = (e) => {
+            if (e.data === 'ping') return;
+            const update = JSON.parse(e.data);
+            const badge = document.getElementById(`badge-${update.optionId}`);
+            if (badge) badge.innerText = update.votes;
+            const index = data.options.findIndex(o => o.id === update.optionId);
+            if (index !== -1 && chartInstance) {
+                chartInstance.data.datasets[0].data[index] = update.votes;
+                chartInstance.update();
+            }
+        };
+    }
+
+    // --- 5. VOTE ACTION ---
+    async function vote(optionId) {
+        await fetch('/api/vote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ optionId })
+        });
+    }
+
+    // --- 6. RESET VIEW (Go Home) ---
+    window.resetView = function() {
+        if (eventSource) eventSource.close();
+        showPage('page-create');
+        document.getElementById('error-msg').innerText = '';
+        loadRecentPolls(); // Refresh the list when coming back
+    };
+
+    // --- ROUTER: Check if URL has a poll ID (e.g. /poll/abc123) ---
+    const path = window.location.pathname.split('/');
+    if (path.length === 3 && path[1] === 'poll') {
+        const id = path[2];
+        if (id.length > 3) {
+            loadPoll(id);
+            showPage('page-poll');
+        }
+    } else {
+        // Load the dashboard on home page
+        loadRecentPolls();
+    }
+</script>
+</body>
+</html>
